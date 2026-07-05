@@ -1,0 +1,274 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Pipeline serverless de procesamiento de videos oculares (v2).
+  S3 (video) -> Lambda extractora de frames -> Step Functions Distributed Map
+  -> Lambda de inferencia YOLO26/ONNX (hasta MaxConcurrency en paralelo)
+  -> Lambda agregadora -> HTTP POST al endpoint externo.
+
+# ---------------------------------------------------------------------------
+# PARÁMETROS: todo lo que cambia entre cuentas/entornos se inyecta aquí,
+# lo que hace el stack 100% replicable con `sam deploy --guided` o
+# `sam deploy --parameter-overrides`.
+# ---------------------------------------------------------------------------
+Parameters:
+  EndpointUrl:
+    Type: String
+    Description: URL del endpoint externo que recibe el JSON consolidado por video.
+  EndpointApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Opcional. Si se define, se envía como header x-api-key en el POST.
+  MaxConcurrency:
+    Type: Number
+    Default: 1000
+    Description: Maximo de ejecuciones hijas simultaneas del Distributed Map.
+  MaxItemsPerBatch:
+    Type: Number
+    Default: 1
+    Description: Frames por invocacion de la Lambda de inferencia (1 = maximo paralelismo).
+  ExtractorMemory:
+    Type: Number
+    Default: 2048
+  ExtractorEphemeralStorage:
+    Type: Number
+    Default: 2048
+  InferenceMemory:
+    Type: Number
+    Default: 2048
+  NotifierReservedConcurrency:
+    Type: Number
+    Default: 5
+    Description: Limita cuantas ejecuciones simultaneas de la Lambda notifier pueden golpear el endpoint.
+  TargetWidth:
+    Type: Number
+    Default: 480
+  TargetHeight:
+    Type: Number
+    Default: 640
+  JpegQuality:
+    Type: Number
+    Default: 90
+  ConfidenceThreshold:
+    Type: String
+    Default: "0.25"
+  FramesTTLDays:
+    Type: Number
+    Default: 1
+    Description: Dias que viven los frames temporales antes de auto-borrarse.
+  ResultsTTLDays:
+    Type: Number
+    Default: 7
+    Description: Dias que viven los JSON de resultados intermedios (y los archivos entregables) antes de auto-borrarse.
+  OutputFormat:
+    Type: String
+    Default: json
+    AllowedValues: [json, csv]
+    Description: Formato del archivo consolidado que se sube a S3 y se enlaza al endpoint.
+  GzipFile:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Si el archivo consolidado (JSON/CSV) se sube comprimido con gzip.
+  PresignedUrlExpirationSeconds:
+    Type: Number
+    Default: 3600
+    Description: >
+      Vigencia de la URL prefirmada de descarga. OJO: una URL prefirmada nunca dura
+      mas que las credenciales temporales (STS) del rol de la Lambda, sin importar
+      este valor -- mantenerlo conservador (<= 1-12h segun la duracion real del rol).
+
+Globals:
+  Function:
+    Architectures: [arm64]        # Graviton2: ~20% mas barato, mejor precio/rendimiento
+    Timeout: 120
+
+Resources:
+
+  # -------------------------------------------------------------------------
+  # BUCKETS
+  # -------------------------------------------------------------------------
+  VideosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-videos-${AWS::AccountId}"
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true   # publica "Object Created" en EventBridge
+
+  FramesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-frames-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpirarFrames
+            Status: Enabled
+            Prefix: frames/
+            ExpirationInDays: !Ref FramesTTLDays
+          - Id: ExpirarResultados
+            Status: Enabled
+            Prefix: results/
+            ExpirationInDays: !Ref ResultsTTLDays
+          - Id: ExpirarEntregables
+            Status: Enabled
+            Prefix: deliverables/
+            ExpirationInDays: !Ref ResultsTTLDays
+
+  # -------------------------------------------------------------------------
+  # LAMBDA 1: EXTRACCIÓN Y PRE-PROCESAMIENTO (OpenCV -> imagen de contenedor)
+  # -------------------------------------------------------------------------
+  FrameExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: !Ref ExtractorMemory
+      Timeout: 900
+      EphemeralStorage:
+        Size: !Ref ExtractorEphemeralStorage
+      Environment:
+        Variables:
+          FRAMES_BUCKET: !Ref FramesBucket
+          JPEG_QUALITY: !Ref JpegQuality
+          TARGET_WIDTH: !Ref TargetWidth
+          TARGET_HEIGHT: !Ref TargetHeight
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub "${AWS::StackName}-videos-${AWS::AccountId}"
+        - S3WritePolicy:
+            BucketName: !Sub "${AWS::StackName}-frames-${AWS::AccountId}"
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/frame_extractor
+      DockerTag: latest
+      DockerBuildArgs:
+        PLATFORM: linux/arm64
+
+  # -------------------------------------------------------------------------
+  # LAMBDA 2: INFERENCIA YOLO26 + GEOMETRÍA (ONNX Runtime -> imagen de contenedor)
+  # -------------------------------------------------------------------------
+  InferenceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      MemorySize: !Ref InferenceMemory
+      Timeout: 60
+      Environment:
+        Variables:
+          MODEL_PATH: /var/task/model/yolo26_seg.onnx
+          CONF_THRESHOLD: !Ref ConfidenceThreshold
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub "${AWS::StackName}-frames-${AWS::AccountId}"
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/inference
+      DockerTag: latest
+      DockerBuildArgs:
+        PLATFORM: linux/arm64
+
+  # -------------------------------------------------------------------------
+  # LAMBDA 3: AGREGACIÓN Y ENVÍO AL ENDPOINT (zip, sin imagen Docker)
+  # -------------------------------------------------------------------------
+  NotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/notifier/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      MemorySize: 1024
+      Timeout: 600
+      ReservedConcurrentExecutions: !Ref NotifierReservedConcurrency
+      Environment:
+        Variables:
+          ENDPOINT_URL: !Ref EndpointUrl
+          ENDPOINT_API_KEY: !Ref EndpointApiKey
+          OUTPUT_FORMAT: !Ref OutputFormat
+          GZIP_FILE: !Ref GzipFile
+          PRESIGNED_URL_EXPIRATION_SECONDS: !Ref PresignedUrlExpirationSeconds
+      Policies:
+        # Lee SUCCEEDED/FAILED del ResultWriter y sube+prefirma el archivo entregable
+        - S3CrudPolicy:
+            BucketName: !Sub "${AWS::StackName}-frames-${AWS::AccountId}"
+
+  # -------------------------------------------------------------------------
+  # STEP FUNCTIONS: ORQUESTADOR CON DISTRIBUTED MAP
+  # -------------------------------------------------------------------------
+  PipelineStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub "${AWS::StackName}-pipeline"
+      DefinitionUri: statemachine/pipeline.asl.json
+      Role: !GetAtt StateMachineRole.Arn
+      DefinitionSubstitutions:
+        ExtractorFunctionArn: !GetAtt FrameExtractorFunction.Arn
+        InferenceFunctionArn: !GetAtt InferenceFunction.Arn
+        NotifierFunctionArn: !GetAtt NotifierFunction.Arn
+        FramesBucket: !Ref FramesBucket
+        MaxConcurrency: !Ref MaxConcurrency
+        MaxItemsPerBatch: !Ref MaxItemsPerBatch
+      Events:
+        VideoUploaded:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.s3"]
+              detail-type: ["Object Created"]
+              detail:
+                bucket:
+                  name: [!Ref VideosBucket]
+                object:
+                  key:
+                    - suffix: ".mp4"
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeLambdas
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt FrameExtractorFunction.Arn
+                  - !GetAtt InferenceFunction.Arn
+                  - !GetAtt NotifierFunction.Arn
+              - Sid: ReadFramesForItemReader
+                Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: !GetAtt FramesBucket.Arn
+              - Sid: WriteMapResults
+                Effect: Allow
+                Action: [s3:PutObject, s3:GetObject]
+                Resource: !Sub "${FramesBucket.Arn}/*"
+              - Sid: DistributedMapChildExecutions
+                Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                  - states:StopExecution
+                  - states:RedriveExecution
+                Resource:
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-pipeline"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-pipeline*"
+                  - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:express:${AWS::StackName}-pipeline*"
+
+Outputs:
+  VideosBucketName:
+    Description: Sube aqui los videos {session_id}_{left|right}.mp4
+    Value: !Ref VideosBucket
+  FramesBucketName:
+    Description: Bucket temporal de frames y resultados intermedios
+    Value: !Ref FramesBucket
+  StateMachineArn:
+    Value: !Ref PipelineStateMachine

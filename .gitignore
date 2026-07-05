@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# AWS SAM
+.aws-sam/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.pt
+*.onnx
+.DS_Store
+.env

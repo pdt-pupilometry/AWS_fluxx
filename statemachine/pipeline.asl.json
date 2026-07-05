@@ -1,0 +1,127 @@
+{
+  "Comment": "Pipeline ocular v2: extraccion de frames -> inferencia masiva en paralelo (Distributed Map) -> agregacion (con reconciliacion de fallos) y POST al endpoint",
+  "StartAt": "ExtractFrames",
+  "States": {
+
+    "ExtractFrames": {
+      "Type": "Task",
+      "Comment": "Lambda 1: descarga el video, extrae TODOS los frames (grises, 480x640) y los deja en el bucket temporal",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ExtractorFunctionArn}",
+        "Payload": {
+          "bucket.$": "$.detail.bucket.name",
+          "key.$": "$.detail.object.key",
+          "execution_name.$": "$$.Execution.Name"
+        }
+      },
+      "ResultSelector": {
+        "job.$": "$.Payload"
+      },
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "SegmentFrames"
+    },
+
+    "SegmentFrames": {
+      "Type": "Map",
+      "Comment": "Distributed Map: lista los frames directamente desde S3 y lanza hasta MaxConcurrency Lambdas de inferencia en paralelo",
+      "MaxConcurrency": ${MaxConcurrency},
+      "ToleratedFailurePercentage": 100,
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:listObjectsV2",
+        "Parameters": {
+          "Bucket": "${FramesBucket}",
+          "Prefix.$": "$.job.frames_prefix"
+        }
+      },
+      "ItemSelector": {
+        "frame_key.$": "$$.Map.Item.Value.Key"
+      },
+      "ItemBatcher": {
+        "MaxItemsPerBatch": ${MaxItemsPerBatch},
+        "BatchInput": {
+          "frames_bucket": "${FramesBucket}",
+          "session_id.$": "$.job.session_id",
+          "eye.$": "$.job.eye"
+        }
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "EXPRESS"
+        },
+        "StartAt": "InferFrame",
+        "States": {
+          "InferFrame": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${InferenceFunctionArn}",
+              "Payload.$": "$"
+            },
+            "OutputPath": "$.Payload",
+            "Retry": [
+              {
+                "ErrorEquals": ["Lambda.TooManyRequestsException"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 6,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              },
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 3,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultWriter": {
+        "Resource": "arn:aws:states:::s3:putObject",
+        "Parameters": {
+          "Bucket": "${FramesBucket}",
+          "Prefix.$": "States.Format('results/{}', $.job.execution_name)"
+        }
+      },
+      "ResultSelector": {
+        "result_writer.$": "$.ResultWriterDetails"
+      },
+      "ResultPath": "$.map_result",
+      "Next": "AggregateAndNotify"
+    },
+
+    "AggregateAndNotify": {
+      "Type": "Task",
+      "Comment": "Lambda 3: lee SUCCEEDED y FAILED del ResultWriter en S3, reconcilia frames faltantes, ordena y hace POST al endpoint",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NotifierFunctionArn}",
+        "Payload": {
+          "job.$": "$.job",
+          "result_writer.$": "$.map_result.result_writer"
+        }
+      },
+      "OutputPath": "$.Payload",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}

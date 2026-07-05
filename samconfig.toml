@@ -1,0 +1,12 @@
+version = 0.1
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+stack_name = "ocular-pipeline"
+resolve_s3 = true
+resolve_image_repos = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
