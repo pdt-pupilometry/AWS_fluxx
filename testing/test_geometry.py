@@ -4,7 +4,7 @@ analítica) SIN necesitar el modelo ONNX real, importando solo las funciones
 puras de yolo_onnx.py (la sesión ONNX se carga perezosa, ver yolo_onnx._get_session).
 
 Ejecutar:
-    python -m pytest tests/test_geometry.py -v
+    python -m pytest testing/test_geometry.py -v
 """
 
 import math

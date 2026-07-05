@@ -51,6 +51,21 @@ echo ">> Compilando imagenes Docker (arm64) y empaquetando la Lambda notifier...
 sam build
 
 echo ">> Publicando imagenes en ECR y desplegando/actualizando el stack '$STACK_NAME'..."
+# `sam deploy --parameter-overrides Key=Value` no acepta un Value vacio, por
+# eso EndpointApiKey solo se agrega si esta definido (si no, se usa el
+# Default: "" del template.yaml).
+PARAM_OVERRIDES=(
+  "EndpointUrl=$ENDPOINT_URL"
+  "MaxConcurrency=${MAX_CONCURRENCY:-1000}"
+  "MaxItemsPerBatch=${MAX_ITEMS_PER_BATCH:-1}"
+  "OutputFormat=${OUTPUT_FORMAT:-json}"
+  "GzipFile=${GZIP_FILE:-true}"
+  "PresignedUrlExpirationSeconds=${PRESIGNED_URL_EXPIRATION_SECONDS:-3600}"
+)
+if [[ -n "${ENDPOINT_API_KEY:-}" ]]; then
+  PARAM_OVERRIDES+=("EndpointApiKey=$ENDPOINT_API_KEY")
+fi
+
 sam deploy \
   --stack-name "$STACK_NAME" \
   --region "$AWS_DEFAULT_REGION" \
@@ -59,14 +74,7 @@ sam deploy \
   --capabilities CAPABILITY_IAM \
   --no-confirm-changeset \
   --no-fail-on-empty-changeset \
-  --parameter-overrides \
-      EndpointUrl="$ENDPOINT_URL" \
-      EndpointApiKey="${ENDPOINT_API_KEY:-}" \
-      MaxConcurrency="${MAX_CONCURRENCY:-1000}" \
-      MaxItemsPerBatch="${MAX_ITEMS_PER_BATCH:-1}" \
-      OutputFormat="${OUTPUT_FORMAT:-json}" \
-      GzipFile="${GZIP_FILE:-true}" \
-      PresignedUrlExpirationSeconds="${PRESIGNED_URL_EXPIRATION_SECONDS:-3600}"
+  --parameter-overrides "${PARAM_OVERRIDES[@]}"
 
 echo ""
 echo ">> Listo. Bucket de videos para subir tus .mp4:"

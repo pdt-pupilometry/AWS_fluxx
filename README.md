@@ -12,22 +12,44 @@ fijo **$0** cuando no hay videos procesándose.
 
 ---
 
+## Herramientas necesarias
+
+> **Nota sobre el sistema operativo**: este README (comandos de instalación,
+> `brew install ...`, rutas, etc.) está escrito y probado en **macOS**. Los
+> binarios y el flujo de `deploy.sh` funcionan igual en Linux/Windows, pero
+> hay que adaptar la forma de instalar cada herramienta (por ejemplo `apt`/
+> `dnf`/`choco`/descarga manual en vez de `brew`) y algunos detalles
+> específicos de macOS (Docker Desktop, `python3.12` vía Homebrew, etc.).
+
+| Herramienta | Para qué se usa | Instalación (macOS) |
+|---|---|---|
+| **AWS CLI** (`aws`) | `deploy.sh` la usa para validar credenciales (`sts get-caller-identity`); también sirve para subir videos (`aws s3 cp`) y diagnosticar stacks/permisos a mano | `brew install awscli` |
+| **AWS SAM CLI** (`sam`) | Compila las imágenes Docker y crea/actualiza todo el stack de CloudFormation (`sam build` + `sam deploy`), usado por `deploy.sh` | `brew install aws-sam-cli` |
+| **Docker** | Build de las imágenes ARM64 de las Lambdas 1 y 2 (`frame_extractor`, `inference`) — tiene que estar **corriendo** (Docker Desktop) al ejecutar `deploy.sh` | `brew install --cask docker` |
+| **Python 3.12** | Correr los tests, `testing/local_test_inference.py`, `testing/test_endpoint.py` y `scripts/export_model.py`. Debe ser 3.12 —la misma versión que el runtime de Lambda— porque `numpy`/`onnxruntime` fijados en `requirements.txt` no tienen wheels para 3.13+ | `brew install python@3.12` |
+| **ngrok** | Solo si vas a usar `testing/test_endpoint.py` (endpoint de prueba local con notificación real) — no hace falta para el resto del pipeline | `brew install ngrok` + `ngrok config add-authtoken <token>` ([dashboard.ngrok.com](https://dashboard.ngrok.com), cuenta gratis) |
+| **Homebrew** | Gestor de paquetes de macOS, la forma más simple de instalar todo lo anterior | [brew.sh](https://brew.sh) |
+
+Además necesitas una **cuenta de AWS** con un usuario/rol y sus credenciales
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` en `.env`) con los permisos
+descritos en [`IAM_PERMISSIONS.md`](IAM_PERMISSIONS.md).
+
 ## Flujo completo, paso a paso (de punta a punta)
 
 ### Paso 0 — Preparación (una sola vez)
 
-1. Exportás tu modelo entrenado `.pt` a ONNX (`scripts/export_model.py`) →
+1. Exportas tu modelo entrenado `.pt` a ONNX (`scripts/export_model.py`) →
    queda en `functions/inference/model/yolo26_seg.onnx`. **El `.pt` nunca se
    sube a AWS**, solo se usa localmente para generar el `.onnx`.
-2. Completás `.env` (copiado de `.env.example`) con tus credenciales de AWS y
+2. Completas `.env` (copiado de `.env.example`) con tus credenciales de AWS y
    la URL del endpoint que recibirá las notificaciones.
-3. Corrés `./scripts/deploy.sh`, que construye las imágenes Docker (Lambda 1
+3. Ejecutas `./scripts/deploy.sh`, que construye las imágenes Docker (Lambda 1
    y 2), las publica en ECR y crea/actualiza todo el stack de CloudFormation
    (buckets, Lambdas, Step Functions, EventBridge, IAM).
 
 ### Paso 1 — Ingesta del video
 
-Subís `sesion123_left.mp4` al bucket `{stack}-videos-{account}`. Ese bucket
+Subes `sesion123_left.mp4` al bucket `{stack}-videos-{account}`. Ese bucket
 tiene EventBridge habilitado: cualquier `Object Created` con sufijo `.mp4`
 dispara automáticamente **una ejecución** del state machine de Step
 Functions (1 ejecución = 1 video).
@@ -191,6 +213,32 @@ Costo aproximado por video de ~1800 frames (60s @ 30fps): **~$0.025-0.045**
 Lambda: el aumento a 1000 ya fue solicitado por el usuario en su cuenta; quien
 replique el proyecto en otra cuenta debe solicitar lo mismo en Service Quotas.
 
+**Importante — bloquea el primer deploy**: cuentas nuevas de AWS suelen
+arrancar con el límite de "Concurrent executions" de Lambda en **10** (el
+default estándar de AWS es 1000). Con el límite en 10, el primer `sam
+deploy` falla al crear `NotifierFunction` con
+`ReservedConcurrentExecutions decreases account's UnreservedConcurrentExecution
+below its minimum value of [10]` — AWS exige que el pool sin reservar nunca
+baje de 10, así que con límite total 10 ninguna función puede reservar
+concurrencia (ni siquiera 1). Hay que pedir el aumento **antes** de desplegar:
+
+```bash
+aws service-quotas request-service-quota-increase \
+  --service-code lambda --quota-code L-B99A9384 \
+  --desired-value 1000 --region <tu-region>
+```
+
+Revisar el estado con:
+
+```bash
+aws service-quotas get-service-quota \
+  --service-code lambda --quota-code L-B99A9384 --region <tu-region>
+```
+
+La aprobación suele tardar minutos, a veces hasta 1-2 días hábiles. Recién
+cuando el valor aprobado supere `NotifierReservedConcurrency` (5 por
+defecto) por al menos 10, `sam deploy` puede terminar de crear el stack.
+
 ---
 
 ## Infraestructura como código
@@ -214,11 +262,19 @@ functions/
 │                              #   findContours→fitEllipse→área, compute_pupil_iris_ratio
 └── notifier/app.py           # Lambda 3: lee SUCCEEDED+FAILED, reconcilia, sube archivo
                                #   JSON/CSV, genera URL prefirmada, notifica al endpoint
+
+testing/                      # Todo lo de testeo, separado del código de producción
+├── test_geometry.py                    # unit tests: geometría (findContours→fitEllipse)
+├── test_aggregator_reconciliation.py   # unit tests: reconciliación + notificación (Lambda 3)
+├── local_test_inference.py             # prueba el .onnx contra una imagen real, sin AWS
+├── test_endpoint.py                    # servidor local + ngrok para recibir notificaciones
+└── TEST_ENDPOINT.md                    # doc del endpoint de prueba
 ```
 
 ## Despliegue (un solo comando, credenciales desde `.env`)
 
-Requisitos: AWS CLI, SAM CLI y Docker corriendo localmente.
+Requisitos: ver [Herramientas necesarias](#herramientas-necesarias) (AWS CLI,
+SAM CLI y Docker corriendo localmente).
 
 ```bash
 # 1. Exporta tu modelo .pt entrenado a ONNX
@@ -243,6 +299,39 @@ configure` ni perfiles del CLI), valida que el modelo `.onnx` exista, corre
 `sam deploy` (publica las imágenes en ECR y crea/actualiza toda la stack).
 Para replicar en otra cuenta AWS basta con otro `.env` — los nombres de
 bucket incluyen el Account ID, así que no hay colisiones entre cuentas.
+
+**Nota — error `409` al crear los buckets (nombre global en liberación)**: si
+un deploy falla y CloudFormation hace rollback, **borra los buckets S3** que
+alcanzó a crear. Los nombres de bucket son **globales** (`{stack}-videos-{account}`
+es el mismo string en todas las regiones), y S3 tarda un rato —de minutos a
+~1 hora— en liberar un nombre recién borrado. Si reintentas el deploy antes de
+que se libere, la recreación falla con:
+
+```
+CREATE_FAILED  AWS::S3::Bucket  VideosBucket
+A conflicting conditional operation is currently in progress against this
+resource. Please try again. (Service: S3, Status Code: 409)
+```
+
+Y como ese fallo dispara **otro rollback que vuelve a borrar el nombre**,
+reintentar de inmediato reinicia el reloj y perpetúa el problema. La solución
+**no** es reintentar en el acto:
+
+1. Borra el stack que quedó en `ROLLBACK_COMPLETE`:
+   `aws cloudformation delete-stack --stack-name <stack>` (los buckets ya
+   fueron borrados en el rollback, el stack queda vacío).
+2. **Espera** a que S3 libere el nombre (deja pasar ~30–60 min sin correr
+   `deploy.sh`; cada intento fallido en el medio reinicia la espera).
+3. Recién entonces corre `./scripts/deploy.sh` **una sola vez**.
+
+## Permisos IAM necesarios (usuario/rol del `.env`)
+
+El usuario/rol que corre `sam build`/`sam deploy` (las credenciales del
+`.env`) necesita permisos propios para crear la infraestructura — distintos
+de los roles de ejecución de las Lambdas, que ya están acotados dentro de
+`template.yaml`. Policy de least-privilege lista para usar, más las
+gotchas específicas de SAM (stacks de bootstrap, transform, límite de
+tamaño de inline policy): **[`IAM_PERMISSIONS.md`](IAM_PERMISSIONS.md)**.
 
 ## Estrategias de optimización
 
@@ -287,7 +376,13 @@ tratar el link como permanente.
 ## Verificación
 
 ```bash
-# 1. Validar el template SAM (si tenés SAM CLI instalado)
+# 0. Entorno local para correr scripts/tests (una sola vez) -- usa Python 3.12,
+#    la misma version que corre en Lambda (ver requirements.txt para el detalle)
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 1. Validar el template SAM (si tienes SAM CLI instalado)
 sam validate --lint
 
 # 2. Compilar los módulos Python
@@ -296,12 +391,16 @@ python -m py_compile functions/frame_extractor/app.py \
     functions/notifier/app.py
 
 # 3. Correr los tests (no requieren AWS ni el modelo real)
-pip install pytest opencv-python-headless numpy onnxruntime requests boto3
-python -m pytest tests/ -v
+python -m pytest testing/ -v
 ```
 
 Prueba E2E completa (requiere cuenta AWS + tu modelo `.onnx` ya colocado):
 `./scripts/deploy.sh` → subir `sesion123_left.mp4` al bucket de videos → ver
 la ejecución en la consola de Step Functions → verificar la notificación
-recibida en el endpoint (o en [webhook.site](https://webhook.site) para
-pruebas rápidas) y que la `download_url` efectivamente sirva el archivo.
+recibida en el endpoint y que la `download_url` efectivamente sirva el
+archivo.
+
+Para probar esto último sin depender de un backend propio, hay un endpoint de
+prueba local (servidor HTTP + túnel ngrok) que imprime la notificación
+recibida y descarga el archivo automáticamente: ver
+**[`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)**.

@@ -226,3 +226,6 @@ __pycache__/
 *.onnx
 .DS_Store
 .env
+
+# Endpoint de prueba local (testing/test_endpoint.py)
+testing/test_downloads/

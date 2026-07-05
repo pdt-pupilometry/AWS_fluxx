@@ -33,7 +33,7 @@ CLASS_IRIS = 1
 # La sesión ONNX se crea UNA vez por contenedor, en el primer uso (lazy):
 # las invocaciones que reutilizan un contenedor tibio no vuelven a cargar el
 # modelo. La carga perezosa también permite importar este módulo en tests
-# unitarios (p. ej. tests/test_geometry.py) sin necesitar el .onnx real.
+# unitarios (p. ej. testing/test_geometry.py) sin necesitar el .onnx real.
 _session = None
 _input_name = None
 

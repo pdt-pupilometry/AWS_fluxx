@@ -4,7 +4,7 @@ de desplegar nada en AWS. Útil para validar el .onnx exportado y el umbral de
 confianza antes de subir la imagen Docker.
 
 Uso:
-    python scripts/local_test_inference.py --image frame_de_prueba.jpg \
+    python testing/local_test_inference.py --image frame_de_prueba.jpg \
         --model functions/inference/model/yolo26_seg.onnx
 """
 

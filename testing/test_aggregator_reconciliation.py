@@ -9,7 +9,7 @@ No necesita AWS real: se mockea boto3 (get_object/put_object/generate_presigned_
 y requests (post_notification).
 
 Ejecutar:
-    python -m pytest tests/test_aggregator_reconciliation.py -v
+    python -m pytest testing/test_aggregator_reconciliation.py -v
 """
 
 import gzip
