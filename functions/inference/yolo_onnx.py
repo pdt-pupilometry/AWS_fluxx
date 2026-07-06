@@ -38,12 +38,23 @@ _session = None
 _input_name = None
 
 
+def _ort_threads() -> int:
+    # En Lambda, cpuinfo no puede leer /sys/devices/system/cpu (Firecracker),
+    # asi que ORT no autodetecta los cores. Se derivan de la memoria asignada:
+    # Lambda entrega ~1 vCPU por cada 1769 MB. Fuera de Lambda (tests locales,
+    # Docker) se usa os.cpu_count().
+    lambda_mb = os.environ.get("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")
+    if lambda_mb:
+        return max(1, round(int(lambda_mb) / 1769))
+    return os.cpu_count() or 2
+
+
 def _get_session() -> tuple[ort.InferenceSession, str]:
     global _session, _input_name
     if _session is None:
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.intra_op_num_threads = 2
+        options.intra_op_num_threads = _ort_threads()
         _session = ort.InferenceSession(MODEL_PATH, sess_options=options, providers=["CPUExecutionProvider"])
         _input_name = _session.get_inputs()[0].name
     return _session, _input_name

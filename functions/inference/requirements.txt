@@ -1,3 +1,7 @@
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
-onnxruntime==1.19.2
+# 1.19.x crashea (SIGABRT) en la init de Lambda ARM64: cpuinfo no puede parsear
+# /sys/devices/system/cpu/* dentro del microVM de Firecracker y la excepcion
+# revienta antes del handler ("Attempt to use DefaultLogger but none has been
+# registered"). Desde ~1.2x ese fallo es un warning no fatal. Ver BITACORA.md.
+onnxruntime==1.27.0

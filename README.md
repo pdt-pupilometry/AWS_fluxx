@@ -10,6 +10,10 @@ frames garantizados, incluso los que fallaron a nivel de infraestructura.
 **Pilares:** replicable con un solo comando (`./scripts/deploy.sh`), costo
 fijo **$0** cuando no hay videos procesándose.
 
+> Historia completa de la puesta en marcha (todos los errores reales de
+> permisos, cuotas y runtime que aparecieron y cómo se resolvieron):
+> **[BITACORA.md](BITACORA.md)**.
+
 ---
 
 ## Herramientas necesarias
@@ -128,31 +132,17 @@ La última Lambda (`functions/notifier/app.py`):
 
 ### Paso 5 — El endpoint recibe la notificación y descarga el archivo
 
-El POST que llega al `EndpointUrl` tiene esta forma (independiente de si el
-video tiene 100 o 100.000 frames — el body siempre es chico):
+El POST que llega al `EndpointUrl` es chico (metadata + un link), sin importar
+si el video tiene 100 o 100.000 frames. El endpoint hace un `GET` a
+`download_url` (descomprimiendo si `compressed: true`) para obtener el
+array/CSV completo. **Por qué un link y no la data inline**: con miles de
+frames por video, embeber todo en el body arriesga timeouts, límites de
+tamaño de request del lado del endpoint, y payloads de varios MB por POST —
+subir un único archivo a S3 y enlazarlo desacopla completamente el tamaño de
+los datos del tamaño de la notificación HTTP.
 
-```json
-{
-  "session_id": "sesion123",
-  "eye": "left",
-  "video_key": "s3://stack-videos-123/sesion123_left.mp4",
-  "fps": 30.0,
-  "total_frames": 1800,
-  "format": "json",
-  "content_type": "application/json",
-  "compressed": true,
-  "download_url": "https://stack-frames-123.s3.amazonaws.com/deliverables/.../frames.json?X-Amz-...",
-  "expires_at": "2026-07-05T18:30:00+00:00"
-}
-```
-
-El endpoint hace un `GET` a `download_url` (descomprimiendo si
-`compressed: true`) para obtener el array/CSV completo de los `total_frames`
-registros. **Por qué un link y no la data inline**: con miles de frames por
-video, embeber todo en el body arriesga timeouts, límites de tamaño de
-request del lado del endpoint, y payloads de varios MB por POST — subir un
-único archivo a S3 y enlazarlo desacopla completamente el tamaño de los datos
-del tamaño de la notificación HTTP.
+Detalle completo del POST y del archivo consolidado (JSON y CSV, campo por
+campo, con ejemplos reales): **[`NOTIFICATION_FORMAT.md`](NOTIFICATION_FORMAT.md)**.
 
 ### Fin del flujo
 
@@ -239,6 +229,38 @@ La aprobación suele tardar minutos, a veces hasta 1-2 días hábiles. Recién
 cuando el valor aprobado supere `NotifierReservedConcurrency` (5 por
 defecto) por al menos 10, `sam deploy` puede terminar de crear el stack.
 
+### Rendimiento medido y parámetros recomendados
+
+Mediciones reales del mismo video ocular (2477 frames, ~82s @ 30fps, 5MB),
+variando solo parámetros — sin tocar código (ver [BITACORA.md](BITACORA.md)
+por el contexto completo):
+
+| Configuración | ExtractFrames | SegmentFrames (Map) | Total pipeline |
+|---|---|---|---|
+| `2048MB`, `batch=1` (defaults del template) | 20.3s | 115.9s | ~139s |
+| `EXTRACTOR_MEMORY=3008`, `batch=8` | 14.1s | 50.6s | ~67s |
+| Ambas Lambdas `3008MB`, `batch=8` | 13.0s | **39.6s** | **~55s (-60%)** |
+
+Por qué funcionan estas dos palancas:
+- **Memoria = CPU en Lambda**: la vCPU asignada escala con la memoria. Más
+  memoria acelera el decode de OpenCV (Lambda 1) y la inferencia ONNX
+  (Lambda 2). El costo por GB-segundo sube, pero la duración baja casi en la
+  misma proporción — costo neto casi neutro, latencia mucho menor.
+- **`MAX_ITEMS_PER_BATCH=8`**: con batch=1, cada frame paga el overhead
+  completo de una ejecución Express + invocación Lambda + (si toca) cold
+  start con carga del modelo. Con 8 frames por invocación ese overhead se
+  amortiza 8×. No conviene subirlo mucho más: el timeout de la Lambda 2 es
+  60s y cada ejecución fallida arrastraría más frames a la reconciliación.
+
+**Proyección para videos largos (20 min, ~36.000 frames @ 30fps)** con la
+configuración recomendada: extracción ~3-4 min (throughput medido ~190 fps,
+dentro del timeout de 900s) + Map ~2 min (4500 ejecuciones hijas en ~4.5
+olas de 1000) ≈ **~5-6 minutos por video**. Si la extracción se convierte en
+la pared para videos aún más largos, la palanca siguiente es pedir en
+Service Quotas el límite de memoria de Lambda a 10240MB (cuentas nuevas
+vienen capadas a **3008MB**) o particionar la extracción en chunks paralelos
+(cambio de arquitectura, documentado como trabajo futuro).
+
 ---
 
 ## Infraestructura como código
@@ -324,6 +346,83 @@ reintentar de inmediato reinicia el reloj y perpetúa el problema. La solución
    `deploy.sh`; cada intento fallido en el medio reinicia la espera).
 3. Recién entonces corre `./scripts/deploy.sh` **una sola vez**.
 
+## Subir un video (disparar el pipeline)
+
+Cada `.mp4` subido al bucket de videos dispara **una ejecución completa** del
+pipeline (extracción → inferencia → notificación). Se sube por línea de
+comandos con `aws s3 cp`, no hay UI.
+
+### Credenciales en tu shell (importante)
+
+`.env` solo se carga automáticamente **dentro de `deploy.sh`** (que hace
+`source .env` internamente) — si corrés `aws` directamente en tu terminal
+para subir un video o inspeccionar el stack, esa sesión no tiene las
+credenciales cargadas y falla con `Unable to locate credentials`. Cargalas
+primero una vez por sesión de terminal:
+
+```bash
+set -a && source .env && set +a
+```
+
+Después de eso, cualquier comando `aws ...` en esa misma terminal usa las
+credenciales del `.env` (hasta que cierres la terminal).
+
+### Nombre del archivo (obligatorio)
+
+Tiene que respetar el formato `{session_id}_{left|right}.mp4` — la Lambda
+`frame_extractor` parsea `session_id` y `eye` del nombre con
+`rsplit('_', 1)` ([functions/frame_extractor/app.py](functions/frame_extractor/app.py)).
+Ejemplos válidos: `sesion123_left.mp4`, `paciente001_right.mp4`. Si el
+nombre no termina en `_left.mp4` o `_right.mp4`, la ejecución falla al
+parsear el archivo.
+
+### Obtener el nombre del bucket
+
+El nombre incluye el Account ID, así que conviene no hardcodearlo. Si ya
+desplegaste, lo sacas del output del stack:
+
+```bash
+set -a && source .env && set +a
+aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME:-ocular-pipeline}" \
+  --region "$AWS_DEFAULT_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='VideosBucketName'].OutputValue" \
+  --output text
+```
+
+(`./scripts/deploy.sh` también imprime este mismo valor al final de cada
+deploy.)
+
+### Subir el video
+
+```bash
+aws s3 cp /ruta/a/tu-video.mp4 s3://<stack>-videos-<account-id>/sesion123_left.mp4
+```
+
+Podés subir varios de una vez (uno por ejecución, se procesan en paralelo):
+
+```bash
+aws s3 cp sesion123_left.mp4  s3://<stack>-videos-<account-id>/
+aws s3 cp sesion123_right.mp4 s3://<stack>-videos-<account-id>/
+```
+
+### Verificar que se disparó
+
+El bucket tiene EventBridge habilitado (`Object Created`, sufijo `.mp4`), así
+que la ejecución arranca sola apenas termina el `PUT`. Para confirmarlo:
+
+```bash
+aws stepfunctions list-executions \
+  --state-machine-arn "arn:aws:states:$AWS_DEFAULT_REGION:<account-id>:stateMachine:${STACK_NAME:-ocular-pipeline}-pipeline" \
+  --region "$AWS_DEFAULT_REGION" \
+  --max-items 5 --output table
+```
+
+O seguirlo visualmente en la consola de AWS: **Step Functions → State
+machines → `<stack>-pipeline` → Executions**. Al terminar, la notificación
+llega a tu `ENDPOINT_URL` (ver [`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)
+si querés probarlo sin un backend propio).
+
 ## Permisos IAM necesarios (usuario/rol del `.env`)
 
 El usuario/rol que corre `sam build`/`sam deploy` (las credenciales del
@@ -403,4 +502,6 @@ archivo.
 Para probar esto último sin depender de un backend propio, hay un endpoint de
 prueba local (servidor HTTP + túnel ngrok) que imprime la notificación
 recibida y descarga el archivo automáticamente: ver
-**[`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)**.
+**[`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)**. Para el detalle
+campo por campo del POST y del archivo consolidado (JSON/CSV): ver
+**[`NOTIFICATION_FORMAT.md`](NOTIFICATION_FORMAT.md)**.

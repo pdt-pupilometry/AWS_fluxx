@@ -103,11 +103,12 @@ def test_collect_and_reconcile_fills_gaps_from_failed_entries():
     }
 
     with patch.object(app.s3, "get_object", side_effect=_fake_get_object(bucket_contents)):
-        frames = app.collect_and_reconcile({"Bucket": "frames-bucket", "Key": "manifest.json"})
+        frames, frames_failed = app.collect_and_reconcile({"Bucket": "frames-bucket", "Key": "manifest.json"})
 
     frames.sort(key=lambda f: f["frame_index"])
 
     assert len(frames) == 3
+    assert frames_failed == 1  # solo el frame 2 vino de una ejecucion FAILED
     assert [f["frame_index"] for f in frames] == [0, 1, 2]
 
     reconciled = frames[2]
@@ -202,11 +203,13 @@ def test_lambda_handler_uploads_single_file_and_notifies_with_link():
 
     # Un solo archivo subido, no 1000 escrituras ni un body gigante
     assert result["frames_processed"] == 2
+    assert result["frames_failed"] == 1
     assert len(put_object_calls) == 1
     assert len(notifications) == 1
 
     notif = notifications[0]
     assert notif["total_frames"] == 2
+    assert notif["frames_failed"] == 1  # 1 frame reconciliado (ejecucion FAILED) -> visible al endpoint
     assert notif["download_url"] == "https://example.invalid/presigned-url"
     assert notif["format"] == "json"
     assert "frames" not in notif  # la data NO viaja en el body de la notificacion

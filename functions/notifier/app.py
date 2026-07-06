@@ -123,12 +123,18 @@ def _reconcile_failed_entry(entry: dict) -> list[dict]:
     return records
 
 
-def collect_and_reconcile(result_writer: dict) -> list[dict]:
+def collect_and_reconcile(result_writer: dict) -> tuple[list[dict], int]:
+    """Devuelve (frames, frames_failed): todos los registros del video y cuántos
+    de ellos fueron reconstruidos con métricas 0 por fallos de infraestructura
+    (ejecuciones FAILED del Map). Ese contador viaja en la notificación para que
+    el endpoint pueda detectar corridas degradadas — un fallo masivo enmascarado
+    por ToleratedFailurePercentage=100 ya nos costó 3 corridas enteras en 0."""
     manifest_bucket = result_writer["Bucket"]
     manifest = _read_json_from_s3(manifest_bucket, result_writer["Key"])
     result_files = manifest.get("ResultFiles", {})
 
     frames: list[dict] = []
+    frames_failed = 0
 
     for result_file in result_files.get("SUCCEEDED", []):
         entries = _read_json_from_s3(manifest_bucket, result_file["Key"])
@@ -146,9 +152,11 @@ def collect_and_reconcile(result_writer: dict) -> list[dict]:
         for result_file in failed_files:
             entries = _read_json_from_s3(manifest_bucket, result_file["Key"])
             for entry in entries:
-                frames.extend(_reconcile_failed_entry(entry))
+                reconciled = _reconcile_failed_entry(entry)
+                frames_failed += len(reconciled)
+                frames.extend(reconciled)
 
-    return frames
+    return frames, frames_failed
 
 
 def _serialize_json(public_frames: list[dict]) -> bytes:
@@ -199,7 +207,7 @@ def post_notification(payload: dict) -> None:
 
 def lambda_handler(event, context):
     job = event["job"]
-    frames = collect_and_reconcile(event["result_writer"])
+    frames, frames_failed = collect_and_reconcile(event["result_writer"])
 
     # Orden temporal garantizado, sin importar el orden de término de las Lambdas
     frames.sort(key=lambda f: f["frame_index"])
@@ -237,6 +245,7 @@ def lambda_handler(event, context):
             "video_key": job["source_video"],
             "fps": job["fps"],
             "total_frames": total_expected,
+            "frames_failed": frames_failed,
             "format": OUTPUT_FORMAT,
             "content_type": content_type,
             "compressed": GZIP_FILE,
@@ -253,6 +262,7 @@ def lambda_handler(event, context):
         "session_id": job["session_id"],
         "eye": job["eye"],
         "frames_processed": len(public_frames),
+        "frames_failed": frames_failed,
         "deliverable_s3_key": deliverable_key,
         "endpoint": ENDPOINT_URL,
     }

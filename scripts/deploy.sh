@@ -61,6 +61,8 @@ PARAM_OVERRIDES=(
   "OutputFormat=${OUTPUT_FORMAT:-json}"
   "GzipFile=${GZIP_FILE:-true}"
   "PresignedUrlExpirationSeconds=${PRESIGNED_URL_EXPIRATION_SECONDS:-3600}"
+  "ExtractorMemory=${EXTRACTOR_MEMORY:-2048}"
+  "InferenceMemory=${INFERENCE_MEMORY:-2048}"
 )
 if [[ -n "${ENDPOINT_API_KEY:-}" ]]; then
   PARAM_OVERRIDES+=("EndpointApiKey=$ENDPOINT_API_KEY")
