@@ -37,7 +37,7 @@ set +a
 
 STACK_NAME="${1:-${STACK_NAME:-ocular-pipeline}}"
 
-MODEL_FILE="functions/inference/model/yolo26_seg.onnx"
+MODEL_FILE="functions/inference/model/yolo26l_seg.onnx"
 if [[ ! -f "$MODEL_FILE" ]]; then
   echo "ERROR: falta el modelo $MODEL_FILE."
   echo "Corre primero: python scripts/export_model.py --weights /ruta/a/tu-modelo.pt"
@@ -63,6 +63,7 @@ PARAM_OVERRIDES=(
   "PresignedUrlExpirationSeconds=${PRESIGNED_URL_EXPIRATION_SECONDS:-3600}"
   "ExtractorMemory=${EXTRACTOR_MEMORY:-2048}"
   "InferenceMemory=${INFERENCE_MEMORY:-2048}"
+  "NotifierReservedConcurrency=${NOTIFIER_RESERVED_CONCURRENCY:-5}"
 )
 if [[ -n "${ENDPOINT_API_KEY:-}" ]]; then
   PARAM_OVERRIDES+=("EndpointApiKey=$ENDPOINT_API_KEY")

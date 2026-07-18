@@ -49,13 +49,27 @@ least-privilege alcanza para desplegar este stack; reemplaza `<REGION>`,
       "Effect": "Allow",
       "Action": [
         "s3:CreateBucket",
+        "s3:DeleteBucket",
         "s3:PutBucketNotification",
         "s3:GetBucketNotification",
         "s3:PutLifecycleConfiguration",
         "s3:GetLifecycleConfiguration",
         "s3:PutEncryptionConfiguration",
+        "s3:GetEncryptionConfiguration",
+        "s3:PutBucketVersioning",
+        "s3:GetBucketVersioning",
+        "s3:PutBucketPolicy",
+        "s3:GetBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:PutBucketTagging",
+        "s3:GetBucketTagging",
+        "s3:TagResource",
+        "s3:UntagResource",
         "s3:PutObject",
         "s3:GetObject",
+        "s3:DeleteObject",
         "s3:ListBucket",
         "s3:GetBucketLocation"
       ],
@@ -72,16 +86,23 @@ least-privilege alcanza para desplegar este stack; reemplaza `<REGION>`,
       "Effect": "Allow",
       "Action": [
         "ecr:CreateRepository",
+        "ecr:DeleteRepository",
         "ecr:DescribeRepositories",
         "ecr:SetRepositoryPolicy",
         "ecr:GetRepositoryPolicy",
+        "ecr:DeleteRepositoryPolicy",
+        "ecr:PutLifecyclePolicy",
+        "ecr:GetLifecyclePolicy",
         "ecr:GetAuthorizationToken",
         "ecr:BatchCheckLayerAvailability",
         "ecr:InitiateLayerUpload",
         "ecr:UploadLayerPart",
         "ecr:CompleteLayerUpload",
         "ecr:PutImage",
-        "ecr:BatchGetImage"
+        "ecr:BatchGetImage",
+        "ecr:TagResource",
+        "ecr:UntagResource",
+        "ecr:ListTagsForResource"
       ],
       "Resource": "*"
     },
@@ -171,11 +192,15 @@ least-privilege alcanza para desplegar este stack; reemplaza `<REGION>`,
   (nota: el "account id" de ese ARN es literalmente `aws`, no el tuyo) — sin
   este permiso el changeset falla con
   `AccessDenied ... on resource: arn:...:transform/Serverless-2016-10-31`.
+- El bucket de bootstrap (`SamCliSourceBucket`) se crea con versioning,
+  encryption, public access block, tags y bucket policy. La policy S3 de
+  arriba incluye esas acciones (`PutBucketVersioning`,
+  `PutBucketPublicAccessBlock`, `PutBucketPolicy`, `TagResource`, etc.); si
+  faltan, el create falla y el stack queda en `ROLLBACK_COMPLETE`.
 - Si un deploy falla a mitad de camino por permisos, el stack de bootstrap
-  (`aws-sam-cli-managed-default`) puede quedar colgado en
-  `REVIEW_IN_PROGRESS` sin recursos reales. SAM CLI se niega a reusarlo
-  ("missing Tags and/or Outputs... not in a healthy state") — hay que
-  borrarlo (`aws cloudformation delete-stack --stack-name
+  (`aws-sam-cli-managed-default`) puede quedar en `REVIEW_IN_PROGRESS`,
+  `ROLLBACK_COMPLETE` o `ROLLBACK_FAILED`. SAM CLI se niega a reusarlo —
+  hay que borrarlo (`aws cloudformation delete-stack --stack-name
   aws-sam-cli-managed-default`) para que el próximo `sam deploy` lo cree de
   cero ya con los permisos correctos.
 - Esta policy asume que reusas siempre el mismo `<STACK_NAME>`. Si vas a

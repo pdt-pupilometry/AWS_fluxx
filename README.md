@@ -269,9 +269,134 @@ vienen capadas a **3008MB**) o particionar la extracción en chunks paralelos
 (Lambda 1 y 2 como imagen Docker, Lambda 3 como zip), el state machine
 ([`statemachine/pipeline.asl.json`](statemachine/pipeline.asl.json)) con el
 Distributed Map, la regla de EventBridge y los roles IAM mínimos por función.
-Todo lo que cambia entre cuentas/entornos es un `Parameter` (`EndpointUrl`,
-`MaxConcurrency`, `MaxItemsPerBatch`, `OutputFormat`, `GzipFile`,
-`PresignedUrlExpirationSeconds`, memorias, TTLs, etc.).
+Todo lo que cambia entre cuentas/entornos es un `Parameter`.
+
+## Especificación completa de la arquitectura
+
+Referencia exhaustiva de cada recurso declarado en
+[`template.yaml`](template.yaml) y [`statemachine/pipeline.asl.json`](statemachine/pipeline.asl.json)
+— para el "por qué" de cada decisión ver las secciones narrativas de arriba;
+esto es el "qué" exacto, campo por campo.
+
+### Parámetros del stack (`Parameters`)
+
+| Parámetro | Tipo | Default | Descripción |
+|---|---|---|---|
+| `EndpointUrl` | String | *(requerido)* | URL del endpoint externo que recibe el JSON consolidado por video |
+| `EndpointApiKey` | String (`NoEcho`) | `""` | Si no está vacío, se envía como header `x-api-key` en el POST |
+| `MaxConcurrency` | Number | `1000` | Máximo de ejecuciones hijas simultáneas del Distributed Map |
+| `MaxItemsPerBatch` | Number | `1` | Frames por invocación de la Lambda de inferencia |
+| `ExtractorMemory` | Number | `2048` | MB de memoria de `FrameExtractorFunction` (= CPU asignada) |
+| `ExtractorEphemeralStorage` | Number | `2048` | MB de `/tmp` disponibles para `FrameExtractorFunction` |
+| `InferenceMemory` | Number | `2048` | MB de memoria de `InferenceFunction` |
+| `NotifierReservedConcurrency` | Number | `5` | Límite de ejecuciones simultáneas de `NotifierFunction` (protege al endpoint externo) |
+| `TargetWidth` | Number | `480` | Ancho al que se redimensiona cada frame |
+| `TargetHeight` | Number | `640` | Alto al que se redimensiona cada frame |
+| `JpegQuality` | Number | `90` | Calidad de codificación JPEG de cada frame |
+| `ConfidenceThreshold` | String | `"0.25"` | Umbral mínimo de confianza YOLO26 para aceptar una detección |
+| `FramesTTLDays` | Number | `1` | Días de vida de `frames/` antes de auto-borrarse (lifecycle S3) |
+| `ResultsTTLDays` | Number | `7` | Días de vida de `results/` y `deliverables/` antes de auto-borrarse |
+| `OutputFormat` | String (`json`\|`csv`) | `json` | Formato del archivo consolidado |
+| `GzipFile` | String (`true`\|`false`) | `true` | Si el archivo consolidado se sube comprimido |
+| `PresignedUrlExpirationSeconds` | Number | `3600` | Vigencia nominal de la URL prefirmada (acotada además por la duración del rol, ver nota en [Estrategias de optimización](#estrategias-de-optimización)) |
+
+`Globals.Function`: `Architectures: [arm64]`, `Timeout: 120` (cada función
+individual sobrescribe el timeout según sus necesidades — ver tabla
+siguiente).
+
+### Recursos (`Resources`)
+
+| Recurso | Tipo | Config clave |
+|---|---|---|
+| `VideosBucket` | `AWS::S3::Bucket` | Nombre `{stack}-videos-{account}`. `EventBridgeConfiguration.EventBridgeEnabled: true` |
+| `FramesBucket` | `AWS::S3::Bucket` | Nombre `{stack}-frames-{account}`. 3 reglas de lifecycle: `frames/`→`FramesTTLDays`, `results/`→`ResultsTTLDays`, `deliverables/`→`ResultsTTLDays` |
+| `FrameExtractorFunction` (Lambda 1) | `AWS::Serverless::Function` (imagen Docker) | `MemorySize=ExtractorMemory`, `Timeout=900`, `EphemeralStorage=ExtractorEphemeralStorage`. Docker context `functions/frame_extractor`, `PLATFORM=linux/arm64` |
+| `InferenceFunction` (Lambda 2) | `AWS::Serverless::Function` (imagen Docker) | `MemorySize=InferenceMemory`, `Timeout=60`. Docker context `functions/inference`, `PLATFORM=linux/arm64` |
+| `NotifierFunction` (Lambda 3) | `AWS::Serverless::Function` (zip) | `CodeUri=functions/notifier/`, `Handler=app.lambda_handler`, `Runtime=python3.12`, `MemorySize=1024`, `Timeout=600`, `ReservedConcurrentExecutions=NotifierReservedConcurrency` |
+| `PipelineStateMachine` | `AWS::Serverless::StateMachine` | `Name={stack}-pipeline`, definición en `statemachine/pipeline.asl.json`, rol `StateMachineRole`, disparada por `VideoUploaded` (EventBridge) |
+| `StateMachineRole` | `AWS::IAM::Role` | Asumible solo por `states.amazonaws.com`; ver statements en la tabla de IAM más abajo |
+
+### Variables de entorno por función
+
+| Función | Variable | Origen |
+|---|---|---|
+| `FrameExtractorFunction` | `FRAMES_BUCKET` | `!Ref FramesBucket` |
+| | `JPEG_QUALITY` | `!Ref JpegQuality` |
+| | `TARGET_WIDTH` | `!Ref TargetWidth` |
+| | `TARGET_HEIGHT` | `!Ref TargetHeight` |
+| `InferenceFunction` | `MODEL_PATH` | fijo: `/var/task/model/yolo26_seg.onnx` (horneado en la imagen) |
+| | `CONF_THRESHOLD` | `!Ref ConfidenceThreshold` |
+| `NotifierFunction` | `ENDPOINT_URL` | `!Ref EndpointUrl` |
+| | `ENDPOINT_API_KEY` | `!Ref EndpointApiKey` |
+| | `OUTPUT_FORMAT` | `!Ref OutputFormat` |
+| | `GZIP_FILE` | `!Ref GzipFile` |
+| | `PRESIGNED_URL_EXPIRATION_SECONDS` | `!Ref PresignedUrlExpirationSeconds` |
+
+### IAM — permisos por rol
+
+Cada Lambda tiene su **propio rol de ejecución**, generado automáticamente
+por SAM a partir de *policy templates* (least-privilege, acotado al bucket
+específico — no `Resource: "*"`):
+
+| Función | Policy template SAM | Alcance |
+|---|---|---|
+| `FrameExtractorFunction` | `S3ReadPolicy` | Lectura sobre `{stack}-videos-{account}` |
+| | `S3WritePolicy` | Escritura sobre `{stack}-frames-{account}` |
+| `InferenceFunction` | `S3ReadPolicy` | Lectura sobre `{stack}-frames-{account}` (descarga cada frame) |
+| `NotifierFunction` | `S3CrudPolicy` | Lectura/escritura/borrado sobre `{stack}-frames-{account}` (lee manifest/`SUCCEEDED`/`FAILED`, sube el entregable, genera la URL prefirmada) |
+
+El rol `StateMachineRole` (explícito, no generado por policy template) tiene
+4 statements en su policy inline `PipelinePermissions`:
+
+| Sid | Acciones | Recurso |
+|---|---|---|
+| `InvokeLambdas` | `lambda:InvokeFunction` | Las 3 funciones (Lambda 1, 2 y 3) |
+| `ReadFramesForItemReader` | `s3:ListBucket` | `FramesBucket` (para que el `ItemReader` liste los frames) |
+| `WriteMapResults` | `s3:PutObject`, `s3:GetObject` | `FramesBucket/*` (para que el `ResultWriter` escriba `manifest.json`/`SUCCEEDED_*`/`FAILED_*`) |
+| `DistributedMapChildExecutions` | `states:StartExecution`, `states:DescribeExecution`, `states:StopExecution`, `states:RedriveExecution` | La propia state machine y sus ejecuciones `STANDARD`/`EXPRESS` (el Distributed Map lanza sus hijos como sub-ejecuciones de sí misma) |
+
+Permisos del usuario/rol que **despliega** el stack (distintos de los roles
+de ejecución de arriba): [`IAM_PERMISSIONS.md`](IAM_PERMISSIONS.md).
+
+### State machine — spec estado por estado
+
+Definición completa: [`statemachine/pipeline.asl.json`](statemachine/pipeline.asl.json).
+`StartAt: ExtractFrames`.
+
+**1. `ExtractFrames`** (`Type: Task`, invoca Lambda 1)
+- `Parameters.Payload`: `{bucket: $.detail.bucket.name, key: $.detail.object.key, execution_name: $$.Execution.Name}` (viene del evento EventBridge `Object Created`)
+- `ResultSelector`: `{job: $.Payload}` → `ResultPath: $` (todo el output pasa a ser `$.job`)
+- `Retry`: `Lambda.ServiceException`, `Lambda.AWSLambdaException`, `Lambda.SdkClientException`, `Lambda.TooManyRequestsException` — 3 intentos, 3s inicial, backoff ×2
+- `Next: SegmentFrames`
+
+**2. `SegmentFrames`** (`Type: Map`, Distributed Map)
+- `MaxConcurrency`: parámetro del stack (default 1000)
+- `ToleratedFailurePercentage: 100` (el Map completa aunque fallen todas sus ejecuciones hijas — la reconciliación en Lambda 3 es lo que garantiza que no se pierda información)
+- `ItemReader`: `s3:listObjectsV2` sobre `FramesBucket`, `Prefix: $.job.frames_prefix` (lista los frames directo desde S3, nunca inline)
+- `ItemSelector`: `{frame_key: $$.Map.Item.Value.Key}`
+- `ItemBatcher`: `MaxItemsPerBatch` (parámetro del stack), `BatchInput: {frames_bucket, session_id, eye}` (metadata del job replicada a cada batch)
+- `ItemProcessor` (`Mode: DISTRIBUTED`, `ExecutionType: EXPRESS`), un único estado `InferFrame`:
+  - `Type: Task`, invoca Lambda 2 con `Payload: $` (el batch completo)
+  - `OutputPath: $.Payload`
+  - `Retry`: `Lambda.TooManyRequestsException` (6 intentos, 2s inicial, backoff ×2, `JitterStrategy: FULL`) y `States.ALL` (2 intentos, 3s inicial, backoff ×2)
+  - `End: true`
+- `ResultWriter`: `s3:putObject` sobre `FramesBucket`, `Prefix: results/{execution_name}` → produce `manifest.json` + `SUCCEEDED_*.json` + `FAILED_*.json`
+- `ResultSelector`: `{result_writer: $.ResultWriterDetails}` → `ResultPath: $.map_result`
+- `Next: AggregateAndNotify`
+
+**3. `AggregateAndNotify`** (`Type: Task`, invoca Lambda 3, estado final)
+- `Parameters.Payload`: `{job: $.job, result_writer: $.map_result.result_writer}`
+- `OutputPath: $.Payload`
+- `Retry`: `Lambda.ServiceException`, `Lambda.TooManyRequestsException` — 3 intentos, 5s inicial, backoff ×2
+- `End: true`
+
+### Outputs del stack
+
+| Output | Valor | Uso |
+|---|---|---|
+| `VideosBucketName` | `!Ref VideosBucket` | Bucket donde subir `{session_id}_{left\|right}.mp4` |
+| `FramesBucketName` | `!Ref FramesBucket` | Bucket temporal de frames/resultados/entregables |
+| `StateMachineArn` | `!Ref PipelineStateMachine` | Para `aws stepfunctions list-executions`/`describe-execution` |
 
 ## Mapa del código
 

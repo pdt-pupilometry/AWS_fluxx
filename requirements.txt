@@ -27,5 +27,7 @@ boto3==1.35.99
 # --- Solo para scripts/export_model.py (opcional, pesado: instala PyTorch) --
 # No hace falta para correr los tests ni testing/local_test_inference.py con
 # un .onnx ya exportado -- solo si vas a exportar un .pt entrenado por tu cuenta.
-ultralytics==8.3.63
-onnx==1.17.0
+# YOLO26 necesita ultralytics>=8.4 (trae Segment26); 8.3.x no puede cargar el .pt
+ultralytics>=8.4.0
+onnx>=1.17.0
+x

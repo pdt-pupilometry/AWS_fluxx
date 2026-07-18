@@ -229,3 +229,4 @@ __pycache__/
 
 # Endpoint de prueba local (testing/test_endpoint.py)
 testing/test_downloads/
+testing/model_eval/

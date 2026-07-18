@@ -40,7 +40,10 @@ Parameters:
   NotifierReservedConcurrency:
     Type: Number
     Default: 5
-    Description: Limita cuantas ejecuciones simultaneas de la Lambda notifier pueden golpear el endpoint.
+    Description: >
+      Limita cuantas ejecuciones simultaneas de la Lambda notifier pueden
+      golpear el endpoint. 0 = sin reserva (necesario si la cuota de
+      Concurrent executions de la cuenta es 10).
   TargetWidth:
     Type: Number
     Default: 480
@@ -78,6 +81,11 @@ Parameters:
       Vigencia de la URL prefirmada de descarga. OJO: una URL prefirmada nunca dura
       mas que las credenciales temporales (STS) del rol de la Lambda, sin importar
       este valor -- mantenerlo conservador (<= 1-12h segun la duracion real del rol).
+
+Conditions:
+  # ReservedConcurrentExecutions: 0 bloquearia el notifier; con 0 omitimos la
+  # propiedad (AWS::NoValue) para poder desplegar con cuota Lambda = 10.
+  HasNotifierReservedConcurrency: !Not [!Equals [!Ref NotifierReservedConcurrency, 0]]
 
 Globals:
   Function:
@@ -179,7 +187,10 @@ Resources:
       Runtime: python3.12
       MemorySize: 1024
       Timeout: 600
-      ReservedConcurrentExecutions: !Ref NotifierReservedConcurrency
+      ReservedConcurrentExecutions: !If
+        - HasNotifierReservedConcurrency
+        - !Ref NotifierReservedConcurrency
+        - !Ref AWS::NoValue
       Environment:
         Variables:
           ENDPOINT_URL: !Ref EndpointUrl
