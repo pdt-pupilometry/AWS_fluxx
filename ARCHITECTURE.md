@@ -2,7 +2,8 @@
 
 Diagrama del flujo serverless de procesamiento de videos oculares. Detalle
 completo (parámetros, IAM, variables de entorno) en [README.md](README.md#diagrama-de-arquitectura)
-y en la especificación estado por estado del state machine.
+y en la especificación estado por estado del state machine. Layout de
+módulos por Lambda (wiring vs responsabilidades): [README — Mapa del código](README.md#mapa-del-código).
 
 ```mermaid
 flowchart TD

@@ -1,9 +1,10 @@
-# Dependencias opcionales para desarrollo local (mismo pin que las Lambdas).
+# Dependencias opcionales para desarrollo local.
 # NO es lo que se despliega a AWS -- eso lo define cada
 # functions/*/requirements.txt (usado por sam build).
 #
-# IMPORTANTE: usa Python 3.12 (la misma version que corre en Lambda);
-# numpy==1.26.4 y onnxruntime==1.19.2 no tienen wheels para Python 3.13+.
+# IMPORTANTE: usa Python 3.12 (la misma version que corre en Lambda).
+# Los pins de abajo siguen functions/*/requirements.txt donde aplica;
+# onnxruntime en Lambda es 1.27.0 (1.19.x crashea en ARM64 Firecracker).
 #
 # Uso:
 #   python3.12 -m venv .venv
@@ -14,6 +15,6 @@
 
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
-onnxruntime==1.19.2
+onnxruntime==1.27.0
 requests==2.32.3
 boto3==1.35.99

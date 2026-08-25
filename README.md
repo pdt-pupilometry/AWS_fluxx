@@ -56,13 +56,14 @@ Functions (1 ejecución = 1 video).
 
 ### Paso 2 — Lambda 1: extracción y pre-procesamiento
 
-La primera Lambda del flujo (`functions/frame_extractor/app.py`):
-1. Descarga el video a `/tmp` y parsea `session_id`/`eye` del nombre del
-   archivo (`rsplit('_', 1)`).
-2. Abre el video con OpenCV (`cv2.VideoCapture`) y, por cada frame: lo pasa a
-   escala de grises, lo redimensiona a 480×640, lo codifica como JPEG (q90) y
-   lo sube al bucket `{stack}-frames-{account}` — todo en memoria, sin tocar
-   disco, con hasta 16 subidas en paralelo.
+La primera Lambda (`functions/frame_extractor/`; entrypoint `app.py` →
+`pipeline.py`):
+1. Descarga el video a `/tmp` y parsea `session_id`/`eye` del nombre
+   (`naming.parse_session_and_eye`).
+2. Abre el video con OpenCV y, por cada frame: gris → resize 480×640 → JPEG
+   (`preprocess.py`) y lo sube al bucket de frames con hasta
+   `UPLOAD_WORKERS` (default 16) subidas en paralelo (`storage.py`) — el
+   video se procesa en streaming, sin acumular todos los JPEGs en RAM.
 3. Cada frame queda en
    `frames/{execution_name}/f{idx:06d}_t{ts_ms}.jpg` (el nombre de la
    ejecución de Step Functions, no el `session_id` a secas, evita mezclar
@@ -81,8 +82,8 @@ contenedor (ya "tibio", con el modelo ONNX en memoria) para el siguiente
 frame en cola — comportamiento propio del servicio Lambda, no algo
 controlado por el código.
 
-Cada invocación de la Lambda 2 (`functions/inference/app.py` +
-`functions/inference/yolo_onnx.py`):
+Cada invocación de la Lambda 2 (`functions/inference/`; `app.py` →
+`processor.py` → `yolo_onnx.py`):
 1. Descarga su frame desde S3.
 2. Corre YOLO26-seg en ONNX Runtime (CPU, arm64): letterbox 640×640, decodifica
    la salida (soporta tanto el formato E2E `(1,300,38)` como el clásico
@@ -105,7 +106,8 @@ fallos de infraestructura genuinos: timeout, OOM, throttling agotado).
 
 ### Paso 4 — Lambda 3: agregación, reconciliación y entrega
 
-La última Lambda (`functions/notifier/app.py`):
+La última Lambda (`functions/notifier/`; `app.py` orquesta `reconcile` →
+`serialize` → `deliverable` → `notify`):
 1. Lee `manifest.json`, junta **todos** los `SUCCEEDED_*.json` (parseando el
    campo `Output` de cada entrada) y **reconcilia** los `FAILED_*.json`
    (parseando el `Input` original de cada ejecución fallida para reconstruir,
@@ -149,6 +151,8 @@ no se necesitan más una vez que el endpoint descargó el archivo.
 ---
 
 ## Diagrama de arquitectura
+
+Versión Mermaid (nodos y buckets): [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ```
 video .mp4 → S3 (videos) → EventBridge (Object Created, suffix .mp4)
@@ -319,7 +323,8 @@ siguiente).
 | | `JPEG_QUALITY` | `!Ref JpegQuality` |
 | | `TARGET_WIDTH` | `!Ref TargetWidth` |
 | | `TARGET_HEIGHT` | `!Ref TargetHeight` |
-| `InferenceFunction` | `MODEL_PATH` | fijo: `/var/task/model/yolo26_seg.onnx` (horneado en la imagen) |
+| | `UPLOAD_WORKERS` | fijo `"16"` en `template.yaml` (subidas S3 en paralelo) |
+| `InferenceFunction` | `MODEL_PATH` | fijo: `/var/task/model/yolo26l_seg.onnx` (horneado en la imagen) |
 | | `CONF_THRESHOLD` | `!Ref ConfidenceThreshold` |
 | `NotifierFunction` | `ENDPOINT_URL` | `!Ref EndpointUrl` |
 | | `ENDPOINT_API_KEY` | `!Ref EndpointApiKey` |
@@ -395,16 +400,37 @@ Definición completa: [`statemachine/pipeline.asl.json`](statemachine/pipeline.a
 
 ## Mapa del código
 
+Cada Lambda sigue el mismo patrón: **`app.py` solo hace wiring** (lee config,
+inyecta dependencias y llama al orquestador). El resto de módulos tiene una
+responsabilidad (SRP); S3/HTTP se abstraen con `Protocol` para poder
+sustituirlos en tests o en otro backend.
+
 ```
 functions/
-├── frame_extractor/app.py   # Lambda 1: OpenCV VideoCapture → gris → resize → S3 (ThreadPool)
-├── inference/
-│   ├── app.py                # Lambda 2: handler, parsea frame_key, try/except por frame
-│   ├── yolo_onnx.py          # sesión ONNX (lazy), letterbox, decode E2E/clásico, máscara,
-│   │                          #   findContours→fitEllipse→área, compute_pupil_iris_ratio
-│   └── model/                # yolo26l_seg.onnx (no va a git; ver model/README.md)
-└── notifier/app.py           # Lambda 3: lee SUCCEEDED+FAILED, reconcilia, sube archivo
-                               #   JSON/CSV, genera URL prefirmada, notifica al endpoint
+├── frame_extractor/          # Lambda 1 (imagen Docker)
+│   ├── app.py                # handler (wiring)
+│   ├── pipeline.py           # orquestación extract → upload
+│   ├── preprocess.py         # gris → resize → JPEG
+│   ├── storage.py            # S3 + uploads paralelos
+│   ├── naming.py             # session_id / eye / keys de frame
+│   └── config.py             # env → ExtractorConfig
+├── inference/                # Lambda 2 (imagen Docker + ONNX)
+│   ├── app.py                # handler (wiring)
+│   ├── processor.py          # descarga → decode → infer (fail-soft)
+│   ├── yolo_onnx.py          # modelo + máscara + elipse
+│   ├── onnx_session.py       # sesión ORT perezosa
+│   ├── frame_keys.py         # parseo f{idx}_t{ts}.jpg
+│   ├── records.py            # ZERO_METRICS + contrato de salida
+│   └── model/                # yolo26l_seg.onnx (no va a git)
+└── notifier/                 # Lambda 3 (zip)
+    ├── app.py                # handler (wiring)
+    ├── reconcile.py          # SUCCEEDED + FAILED → N/N frames
+    ├── serialize.py          # JSON/CSV (extensible)
+    ├── deliverable.py        # upload + URL prefirmada
+    ├── notify.py             # POST con reintentos
+    ├── s3_store.py           # lectura JSON del ResultWriter
+    ├── frame_keys.py         # misma convención que inference
+    └── config.py             # env → NotifierConfig
 
 statemachine/pipeline.asl.json
 template.yaml
@@ -487,8 +513,8 @@ credenciales del `.env` (hasta que cierres la terminal).
 ### Nombre del archivo (obligatorio)
 
 Tiene que respetar el formato `{session_id}_{left|right}.mp4` — la Lambda
-`frame_extractor` parsea `session_id` y `eye` del nombre con
-`rsplit('_', 1)` ([functions/frame_extractor/app.py](functions/frame_extractor/app.py)).
+`frame_extractor` parsea `session_id` y `eye` del nombre en
+[`naming.parse_session_and_eye`](functions/frame_extractor/naming.py).
 Ejemplos válidos: `sesion123_left.mp4`, `paciente001_right.mp4`. Si el
 nombre no termina en `_left.mp4` o `_right.mp4`, la ejecución falla al
 parsear el archivo.
@@ -571,7 +597,7 @@ tamaño de inline policy): **[`IAM_PERMISSIONS.md`](IAM_PERMISSIONS.md)**.
 ### Otras optimizaciones
 - **Sesión ONNX perezosa y global**: se carga una vez por contenedor, en el
   primer frame que procesa.
-- **Subidas S3 en paralelo** (ThreadPool de 16) en la Lambda 1.
+- **Subidas S3 en paralelo** (`UPLOAD_WORKERS`, default 16) en la Lambda 1.
 - **Sin NMS completo**: solo se necesita la mejor detección de pupila y de
   iris por frame — un argmax por clase reemplaza al NMS.
 - **Archivo entregable comprimido con gzip** (`GzipFile=true` por defecto):
@@ -594,10 +620,10 @@ tratar el link como permanente.
 # 1. Validar el template SAM
 sam validate --lint
 
-# 2. Compilar los módulos Python
-python -m py_compile functions/frame_extractor/app.py \
-    functions/inference/app.py functions/inference/yolo_onnx.py \
-    functions/notifier/app.py
+# 2. Compilar los módulos Python de las tres Lambdas
+python -m py_compile functions/frame_extractor/*.py \
+    functions/inference/*.py \
+    functions/notifier/*.py
 ```
 
 Prueba E2E completa (requiere cuenta AWS + tu modelo `.onnx` ya colocado):

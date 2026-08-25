@@ -103,7 +103,7 @@
 
     "AggregateAndNotify": {
       "Type": "Task",
-      "Comment": "Lambda 3: lee SUCCEEDED y FAILED del ResultWriter en S3, reconcilia frames faltantes, ordena y hace POST al endpoint",
+      "Comment": "Lambda 3: lee SUCCEEDED/FAILED del ResultWriter, reconcilia, sube entregable, prefirma URL y hace POST al endpoint",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${NotifierFunctionArn}",

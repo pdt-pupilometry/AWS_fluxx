@@ -141,6 +141,7 @@ Resources:
           JPEG_QUALITY: !Ref JpegQuality
           TARGET_WIDTH: !Ref TargetWidth
           TARGET_HEIGHT: !Ref TargetHeight
+          UPLOAD_WORKERS: "16"
       Policies:
         - S3ReadPolicy:
             BucketName: !Sub "${AWS::StackName}-videos-${AWS::AccountId}"

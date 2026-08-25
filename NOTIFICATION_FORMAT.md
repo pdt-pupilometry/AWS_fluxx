@@ -1,7 +1,8 @@
 # Formato de la notificación y del archivo consolidado
 
 Este documento detalla los dos formatos que produce la Lambda `notifier`
-([functions/notifier/app.py](functions/notifier/app.py)) al terminar de
+([functions/notifier/](functions/notifier/); orquestada por
+[`app.py`](functions/notifier/app.py)) al terminar de
 procesar un video:
 
 1. El **POST** que llega a tu `ENDPOINT_URL` (metadata pequeña + un link).
