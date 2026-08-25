@@ -1,10 +1,9 @@
-# Dependencias para desarrollo local: correr los scripts de testing/ y los
-# tests de pytest. NO es lo que se despliega a Lambda -- eso lo define cada
-# functions/*/requirements.txt (usado por sam build al armar cada imagen).
+# Dependencias opcionales para desarrollo local (mismo pin que las Lambdas).
+# NO es lo que se despliega a AWS -- eso lo define cada
+# functions/*/requirements.txt (usado por sam build).
 #
-# IMPORTANTE: usa Python 3.12 (la misma version que corre en Lambda), no la
-# version mas nueva que tengas de sistema -- numpy==1.26.4 y
-# onnxruntime==1.19.2 no tienen wheels para Python 3.13+.
+# IMPORTANTE: usa Python 3.12 (la misma version que corre en Lambda);
+# numpy==1.26.4 y onnxruntime==1.19.2 no tienen wheels para Python 3.13+.
 #
 # Uso:
 #   python3.12 -m venv .venv
@@ -13,14 +12,8 @@
 #
 # Si no tienes python3.12 instalado: `brew install python@3.12` (macOS).
 
-# --- Testing ----------------------------------------------------------------
-pytest==8.3.4
-
-# --- Mismas versiones que usan las imagenes Lambda (functions/*/requirements.txt),
-# para que los tests corran contra el mismo comportamiento que en AWS --------
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
 onnxruntime==1.19.2
 requests==2.32.3
 boto3==1.35.99
-x

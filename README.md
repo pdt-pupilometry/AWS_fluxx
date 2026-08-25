@@ -10,10 +10,6 @@ frames garantizados, incluso los que fallaron a nivel de infraestructura.
 **Pilares:** replicable con un solo comando (`./scripts/deploy.sh`), costo
 fijo **$0** cuando no hay videos procesándose.
 
-> Historia completa de la puesta en marcha (todos los errores reales de
-> permisos, cuotas y runtime que aparecieron y cómo se resolvieron):
-> **[BITACORA.md](BITACORA.md)**.
-
 ---
 
 ## Herramientas necesarias
@@ -23,16 +19,14 @@ fijo **$0** cuando no hay videos procesándose.
 > binarios y el flujo de `deploy.sh` funcionan igual en Linux/Windows, pero
 > hay que adaptar la forma de instalar cada herramienta (por ejemplo `apt`/
 > `dnf`/`choco`/descarga manual en vez de `brew`) y algunos detalles
-> específicos de macOS (Docker Desktop, `python3.12` vía Homebrew, etc.).
+> específicos de macOS (Docker Desktop, etc.).
 
 | Herramienta | Para qué se usa | Instalación (macOS) |
 |---|---|---|
 | **AWS CLI** (`aws`) | `deploy.sh` la usa para validar credenciales (`sts get-caller-identity`); también sirve para subir videos (`aws s3 cp`) y diagnosticar stacks/permisos a mano | `brew install awscli` |
 | **AWS SAM CLI** (`sam`) | Compila las imágenes Docker y crea/actualiza todo el stack de CloudFormation (`sam build` + `sam deploy`), usado por `deploy.sh` | `brew install aws-sam-cli` |
 | **Docker** | Build de las imágenes ARM64 de las Lambdas 1 y 2 (`frame_extractor`, `inference`) — tiene que estar **corriendo** (Docker Desktop) al ejecutar `deploy.sh` | `brew install --cask docker` |
-| **Python 3.12** | Correr los tests, `testing/local_test_inference.py` y `testing/test_endpoint.py`. Debe ser 3.12 —la misma versión que el runtime de Lambda— porque `numpy`/`onnxruntime` fijados en `requirements.txt` no tienen wheels para 3.13+ | `brew install python@3.12` |
-| **ngrok** | Solo si vas a usar `testing/test_endpoint.py` (endpoint de prueba local con notificación real) — no hace falta para el resto del pipeline | `brew install ngrok` + `ngrok config add-authtoken <token>` ([dashboard.ngrok.com](https://dashboard.ngrok.com), cuenta gratis) |
-| **Homebrew** | Gestor de paquetes de macOS, la forma más simple de instalar todo lo anterior | [brew.sh](https://brew.sh) |
+| **Homebrew** | Gestor de paquetes de macOS, la forma más simple de instalar lo anterior | [brew.sh](https://brew.sh) |
 
 Además necesitas una **cuenta de AWS** con un usuario/rol y sus credenciales
 (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` en `.env`) con los permisos
@@ -234,8 +228,7 @@ defecto) por al menos 10, `sam deploy` puede terminar de crear el stack.
 ### Rendimiento medido y parámetros recomendados
 
 Mediciones reales del mismo video ocular (2477 frames, ~82s @ 30fps, 5MB),
-variando solo parámetros — sin tocar código (ver [BITACORA.md](BITACORA.md)
-por el contexto completo):
+variando solo parámetros — sin tocar código:
 
 | Configuración | ExtractFrames | SegmentFrames (Map) | Total pipeline |
 |---|---|---|---|
@@ -407,17 +400,15 @@ functions/
 ├── frame_extractor/app.py   # Lambda 1: OpenCV VideoCapture → gris → resize → S3 (ThreadPool)
 ├── inference/
 │   ├── app.py                # Lambda 2: handler, parsea frame_key, try/except por frame
-│   └── yolo_onnx.py          # sesión ONNX (lazy), letterbox, decode E2E/clásico, máscara,
-│                              #   findContours→fitEllipse→área, compute_pupil_iris_ratio
+│   ├── yolo_onnx.py          # sesión ONNX (lazy), letterbox, decode E2E/clásico, máscara,
+│   │                          #   findContours→fitEllipse→área, compute_pupil_iris_ratio
+│   └── model/                # yolo26l_seg.onnx (no va a git; ver model/README.md)
 └── notifier/app.py           # Lambda 3: lee SUCCEEDED+FAILED, reconcilia, sube archivo
                                #   JSON/CSV, genera URL prefirmada, notifica al endpoint
 
-testing/                      # Todo lo de testeo, separado del código de producción
-├── test_geometry.py                    # unit tests: geometría (findContours→fitEllipse)
-├── test_aggregator_reconciliation.py   # unit tests: reconciliación + notificación (Lambda 3)
-├── local_test_inference.py             # prueba el .onnx contra una imagen real, sin AWS
-├── test_endpoint.py                    # servidor local + ngrok para recibir notificaciones
-└── TEST_ENDPOINT.md                    # doc del endpoint de prueba
+statemachine/pipeline.asl.json
+template.yaml
+scripts/deploy.sh
 ```
 
 ## Despliegue (un solo comando, credenciales desde `.env`)
@@ -546,8 +537,7 @@ aws stepfunctions list-executions \
 
 O seguirlo visualmente en la consola de AWS: **Step Functions → State
 machines → `<stack>-pipeline` → Executions**. Al terminar, la notificación
-llega a tu `ENDPOINT_URL` (ver [`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)
-si querés probarlo sin un backend propio).
+llega a tu `ENDPOINT_URL` (formato en [`NOTIFICATION_FORMAT.md`](NOTIFICATION_FORMAT.md)).
 
 ## Permisos IAM necesarios (usuario/rol del `.env`)
 
@@ -601,22 +591,13 @@ tratar el link como permanente.
 ## Verificación
 
 ```bash
-# 0. Entorno local para correr scripts/tests (una sola vez) -- usa Python 3.12,
-#    la misma version que corre en Lambda (ver requirements.txt para el detalle)
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 1. Validar el template SAM (si tienes SAM CLI instalado)
+# 1. Validar el template SAM
 sam validate --lint
 
 # 2. Compilar los módulos Python
 python -m py_compile functions/frame_extractor/app.py \
     functions/inference/app.py functions/inference/yolo_onnx.py \
     functions/notifier/app.py
-
-# 3. Correr los tests (no requieren AWS ni el modelo real)
-python -m pytest testing/ -v
 ```
 
 Prueba E2E completa (requiere cuenta AWS + tu modelo `.onnx` ya colocado):
@@ -625,9 +606,5 @@ la ejecución en la consola de Step Functions → verificar la notificación
 recibida en el endpoint y que la `download_url` efectivamente sirva el
 archivo.
 
-Para probar esto último sin depender de un backend propio, hay un endpoint de
-prueba local (servidor HTTP + túnel ngrok) que imprime la notificación
-recibida y descarga el archivo automáticamente: ver
-**[`testing/TEST_ENDPOINT.md`](testing/TEST_ENDPOINT.md)**. Para el detalle
-campo por campo del POST y del archivo consolidado (JSON/CSV): ver
+Detalle campo por campo del POST y del archivo consolidado (JSON/CSV):
 **[`NOTIFICATION_FORMAT.md`](NOTIFICATION_FORMAT.md)**.

@@ -32,8 +32,7 @@ CLASS_IRIS = 1
 
 # La sesión ONNX se crea UNA vez por contenedor, en el primer uso (lazy):
 # las invocaciones que reutilizan un contenedor tibio no vuelven a cargar el
-# modelo. La carga perezosa también permite importar este módulo en tests
-# unitarios (p. ej. testing/test_geometry.py) sin necesitar el .onnx real.
+# modelo. La carga perezosa también permite importar este módulo sin el .onnx.
 _session = None
 _input_name = None
 
@@ -41,8 +40,8 @@ _input_name = None
 def _ort_threads() -> int:
     # En Lambda, cpuinfo no puede leer /sys/devices/system/cpu (Firecracker),
     # asi que ORT no autodetecta los cores. Se derivan de la memoria asignada:
-    # Lambda entrega ~1 vCPU por cada 1769 MB. Fuera de Lambda (tests locales,
-    # Docker) se usa os.cpu_count().
+    # Lambda entrega ~1 vCPU por cada 1769 MB. Fuera de Lambda (p. ej. Docker
+    # local) se usa os.cpu_count().
     lambda_mb = os.environ.get("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")
     if lambda_mb:
         return max(1, round(int(lambda_mb) / 1769))

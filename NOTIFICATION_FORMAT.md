@@ -56,9 +56,6 @@ tiene que hacer un `GET` a `download_url` para obtener el consolidado.
 2. Si `compressed: true`, descomprimir con gzip antes de parsear.
 3. Parsear como `format` indica (JSON array o CSV).
 
-`testing/test_endpoint.py` hace exactamente estos 3 pasos automáticamente —
-ver [testing/TEST_ENDPOINT.md](testing/TEST_ENDPOINT.md).
-
 ## 2. El archivo consolidado (contenido de `download_url`)
 
 Es un único archivo (nunca fragmentado) con **un registro por frame**,
@@ -138,5 +135,4 @@ mismo video).
 ## Ver también
 
 - [README.md](README.md) — flujo completo del pipeline.
-- [testing/TEST_ENDPOINT.md](testing/TEST_ENDPOINT.md) — endpoint de prueba
-  que recibe este POST, descarga y muestra el consolidado automáticamente.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — diagrama del state machine.
