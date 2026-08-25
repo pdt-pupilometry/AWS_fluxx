@@ -164,7 +164,7 @@ Resources:
       Timeout: 60
       Environment:
         Variables:
-          MODEL_PATH: /var/task/model/yolo26_seg.onnx
+          MODEL_PATH: /var/task/model/yolo26l_seg.onnx
           CONF_THRESHOLD: !Ref ConfidenceThreshold
       Policies:
         - S3ReadPolicy:

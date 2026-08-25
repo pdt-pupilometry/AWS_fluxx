@@ -222,7 +222,6 @@ __marimo__/
 __pycache__/
 *.pyc
 .pytest_cache/
-*.pt
 *.onnx
 .DS_Store
 .env
@@ -230,3 +229,6 @@ __pycache__/
 # Endpoint de prueba local (testing/test_endpoint.py)
 testing/test_downloads/
 testing/model_eval/
+# Bundle portatil (incluye el modelo de 112 MB y videos de prueba)
+anotador_portable/
+anotador_portable.zip

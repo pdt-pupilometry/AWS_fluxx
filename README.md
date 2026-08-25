@@ -30,7 +30,7 @@ fijo **$0** cuando no hay videos procesándose.
 | **AWS CLI** (`aws`) | `deploy.sh` la usa para validar credenciales (`sts get-caller-identity`); también sirve para subir videos (`aws s3 cp`) y diagnosticar stacks/permisos a mano | `brew install awscli` |
 | **AWS SAM CLI** (`sam`) | Compila las imágenes Docker y crea/actualiza todo el stack de CloudFormation (`sam build` + `sam deploy`), usado por `deploy.sh` | `brew install aws-sam-cli` |
 | **Docker** | Build de las imágenes ARM64 de las Lambdas 1 y 2 (`frame_extractor`, `inference`) — tiene que estar **corriendo** (Docker Desktop) al ejecutar `deploy.sh` | `brew install --cask docker` |
-| **Python 3.12** | Correr los tests, `testing/local_test_inference.py`, `testing/test_endpoint.py` y `scripts/export_model.py`. Debe ser 3.12 —la misma versión que el runtime de Lambda— porque `numpy`/`onnxruntime` fijados en `requirements.txt` no tienen wheels para 3.13+ | `brew install python@3.12` |
+| **Python 3.12** | Correr los tests, `testing/local_test_inference.py` y `testing/test_endpoint.py`. Debe ser 3.12 —la misma versión que el runtime de Lambda— porque `numpy`/`onnxruntime` fijados en `requirements.txt` no tienen wheels para 3.13+ | `brew install python@3.12` |
 | **ngrok** | Solo si vas a usar `testing/test_endpoint.py` (endpoint de prueba local con notificación real) — no hace falta para el resto del pipeline | `brew install ngrok` + `ngrok config add-authtoken <token>` ([dashboard.ngrok.com](https://dashboard.ngrok.com), cuenta gratis) |
 | **Homebrew** | Gestor de paquetes de macOS, la forma más simple de instalar todo lo anterior | [brew.sh](https://brew.sh) |
 
@@ -42,9 +42,11 @@ descritos en [`IAM_PERMISSIONS.md`](IAM_PERMISSIONS.md).
 
 ### Paso 0 — Preparación (una sola vez)
 
-1. Exportas tu modelo entrenado `.pt` a ONNX (`scripts/export_model.py`) →
-   queda en `functions/inference/model/yolo26_seg.onnx`. **El `.pt` nunca se
-   sube a AWS**, solo se usa localmente para generar el `.onnx`.
+1. Colocas el modelo ONNX listo en
+   `functions/inference/model/yolo26l_seg.onnx` (ver
+   [`functions/inference/model/README.md`](functions/inference/model/README.md)).
+   Este repo no entrena ni exporta pesos: solo despliega e infiere con ONNX
+   Runtime.
 2. Completas `.env` (copiado de `.env.example`) con tus credenciales de AWS y
    la URL del endpoint que recibirá las notificaciones.
 3. Ejecutas `./scripts/deploy.sh`, que construye las imágenes Docker (Lambda 1
@@ -424,9 +426,8 @@ Requisitos: ver [Herramientas necesarias](#herramientas-necesarias) (AWS CLI,
 SAM CLI y Docker corriendo localmente).
 
 ```bash
-# 1. Exporta tu modelo .pt entrenado a ONNX
-python scripts/export_model.py --weights ~/Downloads/best.pt \
-    --out functions/inference/model/yolo26_seg.onnx
+# 1. Coloca el modelo ONNX (nombre exacto)
+#    functions/inference/model/yolo26l_seg.onnx
 
 # 2. Configura tus credenciales y variables
 cp .env.example .env

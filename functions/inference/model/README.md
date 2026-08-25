@@ -1,17 +1,14 @@
-# Modelo YOLO26
+# Modelo YOLO26 (ONNX)
 
-Coloca aquí tu modelo de segmentación exportado a ONNX con el nombre exacto:
+Coloca aquí el modelo de segmentación ya exportado a ONNX con el nombre exacto:
 
 ```
-yolo26_seg.onnx
+yolo26l_seg.onnx
 ```
 
-Usa `scripts/export_model.py` (en la raíz del repo) para exportar tu `.pt`
-entrenado:
-
-```bash
-python scripts/export_model.py --weights /ruta/a/tu-modelo.pt --out functions/inference/model/yolo26_seg.onnx
-```
+Este repo solo despliega e infiere con ONNX Runtime. El archivo `.onnx` debe
+estar listo antes de correr `./scripts/deploy.sh` (no se genera ni se entrena
+desde aquí).
 
 Clases esperadas por el pipeline:
 - **Clase 0:** pupila

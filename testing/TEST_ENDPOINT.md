@@ -26,7 +26,7 @@ estándar (`http.server`, `urllib`) y el binario de `ngrok`.
   El token se obtiene creando una cuenta gratuita en
   [dashboard.ngrok.com](https://dashboard.ngrok.com).
 
-- Python 3 (ya lo necesitas para `scripts/export_model.py`).
+- Python 3.12 (misma versión que el runtime de Lambda; ver `requirements.txt`).
 
 ## Uso
 

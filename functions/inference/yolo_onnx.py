@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/var/task/model/yolo26_seg.onnx")
+MODEL_PATH = os.environ.get("MODEL_PATH", "/var/task/model/yolo26l_seg.onnx")
 CONF_THRESHOLD = float(os.environ.get("CONF_THRESHOLD", "0.25"))
 INPUT_SIZE = 640
 MASK_THRESHOLD = 0.5
@@ -168,7 +168,7 @@ def build_mask(
 def ellipse_area_from_mask(mask: np.ndarray | None) -> float:
     """
     Extrae el contorno mayor de la máscara y ajusta la elipse de mejor calce.
-    cv2.fitEllipse exige >= 5 puntos: durante parpadeos u oclusiones el
+    cv2.fitEllipseDirect exige >= 5 puntos: durante parpadeos u oclusiones el
     contorno puede ser degenerado, por lo que cualquier fallo devuelve 0.
     """
     if mask is None:
@@ -179,9 +179,9 @@ def ellipse_area_from_mask(mask: np.ndarray | None) -> float:
     contour = max(contours, key=cv2.contourArea)
     try:
         if len(contour) < 5:
-            raise ValueError("fitEllipse requiere al menos 5 puntos")
-        (_, _), (major_axis, minor_axis), _ = cv2.fitEllipse(contour)
-        # fitEllipse devuelve los ejes completos: area = pi * (MA/2) * (ma/2)
+            raise ValueError("fitEllipseDirect requiere al menos 5 puntos")
+        (_, _), (major_axis, minor_axis), _ = cv2.fitEllipseDirect(contour)
+        # fitEllipseDirect devuelve los ejes completos: area = pi * (MA/2) * (ma/2)
         return float(math.pi * major_axis * minor_axis / 4.0)
     except (cv2.error, ValueError):
         return 0.0  # oclusión / parpadeo

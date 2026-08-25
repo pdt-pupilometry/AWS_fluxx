@@ -40,7 +40,7 @@ STACK_NAME="${1:-${STACK_NAME:-ocular-pipeline}}"
 MODEL_FILE="functions/inference/model/yolo26l_seg.onnx"
 if [[ ! -f "$MODEL_FILE" ]]; then
   echo "ERROR: falta el modelo $MODEL_FILE."
-  echo "Corre primero: python scripts/export_model.py --weights /ruta/a/tu-modelo.pt"
+  echo "Coloca el .onnx listo en functions/inference/model/ (ver model/README.md)."
   exit 1
 fi
 

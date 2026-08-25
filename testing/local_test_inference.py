@@ -5,7 +5,7 @@ confianza antes de subir la imagen Docker.
 
 Uso:
     python testing/local_test_inference.py --image frame_de_prueba.jpg \
-        --model functions/inference/model/yolo26_seg.onnx
+        --model functions/inference/model/yolo26l_seg.onnx
 """
 
 import argparse
@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--image", required=True, help="Frame de prueba (jpg/png)")
     parser.add_argument(
         "--model",
-        default="functions/inference/model/yolo26_seg.onnx",
+        default="functions/inference/model/yolo26l_seg.onnx",
         help="Ruta al modelo ONNX",
     )
     parser.add_argument("--conf-threshold", default="0.25")
