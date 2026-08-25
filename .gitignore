@@ -232,3 +232,6 @@ testing/
 # Bundle portatil (incluye el modelo de 112 MB y videos de prueba)
 anotador_portable/
 anotador_portable.zip
+
+# Workspace
+*.code-workspace
